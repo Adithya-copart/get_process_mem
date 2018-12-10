@@ -22,7 +22,7 @@ class GetProcessMem
   GB_TO_BYTE = number_to_bigdecimal 1_073_741_824 # 1024**3 = 1_073_741_824
   CONVERSION = { "kb" => KB_TO_BYTE, "mb" => MB_TO_BYTE, "gb" => GB_TO_BYTE }
   ROUND_UP   = number_to_bigdecimal "0.5"
-  attr_reader :pid
+  attr_reader :pids
 
   RUNS_ON_WINDOWS = Gem.win_platform?
 
@@ -37,11 +37,11 @@ class GetProcessMem
     include Sys
   end
 
-  def initialize(pid = Process.pid)
-    @status_file  = Pathname.new "/proc/#{pid}/status"
-    @process_file = Pathname.new "/proc/#{pid}/smaps"
-    @pid          = pid
-    @linux        = @status_file.exist?
+  def initialize(*pids)
+    @pids          = pids.first ? pids : [ Process.pid ]
+    @status_files  = @pids.map {|pid| Pathname.new "/proc/#{pid}/status"}
+    @process_files = @pids.map {|pid| Pathname.new "/proc/#{pid}/smaps"}
+    @linux         = @status_files.first.exist?
   end
 
   def linux?
@@ -49,7 +49,7 @@ class GetProcessMem
   end
 
   def bytes
-    memory =   linux_status_memory if linux?
+    memory =   @status_files.inject(0) { |status_file| linux_status_memory(status_file)} if linux?
     memory ||= ps_memory
   end
 
@@ -73,6 +73,7 @@ class GetProcessMem
   # linux stores memory info in a file "/proc/#{pid}/status"
   # If it's available it uses less resources than shelling out to ps
   def linux_status_memory(file = @status_file)
+    # SMELL: Not sure if iteration is slower with multiple pids.
     line = file.each_line.detect {|line| line.start_with? 'VmRSS'.freeze }
     return unless line
     return unless (_name, value, unit = line.split(nil)).length == 3
@@ -101,10 +102,12 @@ class GetProcessMem
   # in low memory situations
   def ps_memory
     if RUNS_ON_WINDOWS
-      size = ProcTable.ps(pid).working_set_size
+      # TODO: Untested
+      size = pids.inject(0) {|pid| ProcTable.ps(pid).working_set_size}
       number_to_bigdecimal(size)
     else
-      mem = `ps -o rss= -p #{pid}`
+      mem = `ps -o rss= -p #{pids.join(' ')} | awk '{sum+=$1} END {print sum}'`
+      mem&.strip!
       KB_TO_BYTE * number_to_bigdecimal(mem == "" ? 0 : mem)
     end
   end
